@@ -80,7 +80,7 @@ use std::ops::{Deref, DerefMut};
 
 
 
-enum CowVecContent<'a, T: 'static> {
+enum CowVecContent<'a, T> {
     Owned(Vec<T>),
     Borrowed(&'a Vec<T>),
 }
@@ -92,7 +92,7 @@ enum WrapperState {
 }
 
 /// An internal helper class
-pub struct CowVecMain<'extvec,T:'static> {
+pub struct CowVecMain<'extvec,T> {
     content: CowVecContent<'extvec, T>,
 
     // Iter
@@ -102,13 +102,13 @@ pub struct CowVecMain<'extvec,T:'static> {
 }
 
 /// A copy-on-write wrapper around a [Vec<T>](std::vec::Vec).
-pub struct CowVec<'extvec, T: 'static> {
+pub struct CowVec<'extvec, T> {
     main : CowVecMain<'extvec,T>,
     bad_wrapper_use_detector: WrapperState,
 }
 
 // The lifetime 'extvec is the lifetime of the borrowed external vector.
-impl<'extvec, T: 'static + Clone> CowVecContent<'extvec, T> {
+impl<'extvec, T: Clone> CowVecContent<'extvec, T> {
     fn mut_pointer(&mut self) -> (*mut T, usize) {
         match self {
             CowVecContent::Owned(v) => (v.as_mut_ptr(), v.len()),
@@ -138,7 +138,7 @@ impl<'extvec, T: 'static + Clone> CowVecContent<'extvec, T> {
 
 /// A placeholder representing a value being iterated over - the return value of the next()
 /// function on [CowVecIter](crate::CowVecIter)
-pub struct CowVecItemWrapper<'extvec, T: 'static> {
+pub struct CowVecItemWrapper<'extvec, T> {
     item: *mut T,
     end: *mut T,
     cowvec: *mut CowVecMain<'extvec, T>,
@@ -147,7 +147,7 @@ pub struct CowVecItemWrapper<'extvec, T: 'static> {
 }
 
 
-impl<'extvec,T:'static> Drop for CowVecItemWrapper<'extvec,T> {
+impl<'extvec,T> Drop for CowVecItemWrapper<'extvec,T> {
     fn drop(&mut self) {
         // Safe since the originating CowVec and both possible referenced slices
         // (owned or borrowed) must still be alive because of lifetime constraints
@@ -155,7 +155,7 @@ impl<'extvec,T:'static> Drop for CowVecItemWrapper<'extvec,T> {
         *unsafe{(&mut *self.bad_wrapper_use_detector)} = WrapperState::Dead;
     }
 }
-impl<'extvec, T: 'static + Clone> Deref for CowVec<'extvec, T> {
+impl<'extvec, T:  Clone> Deref for CowVec<'extvec, T> {
     type Target = Vec<T>;
 
     fn deref(&self) -> &Self::Target {
@@ -166,7 +166,7 @@ impl<'extvec, T: 'static + Clone> Deref for CowVec<'extvec, T> {
     }
 }
 
-impl<'extvec, T: 'static + Clone> DerefMut for CowVec<'extvec, T> {
+impl<'extvec, T:  Clone> DerefMut for CowVec<'extvec, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.main.content.ensure_owned();
         match &mut self.main.content {
@@ -176,7 +176,7 @@ impl<'extvec, T: 'static + Clone> DerefMut for CowVec<'extvec, T> {
     }
 }
 
-impl<'extvec, T: 'static + Clone> Deref for CowVecItemWrapper<'extvec,T> {
+impl<'extvec, T:  Clone> Deref for CowVecItemWrapper<'extvec,T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
         // Safe because we know that CowVec must still be alive since
@@ -186,7 +186,7 @@ impl<'extvec, T: 'static + Clone> Deref for CowVecItemWrapper<'extvec,T> {
     }
 }
 
-impl<'extvec, T: 'static + Clone> DerefMut for CowVecItemWrapper<'extvec,T> {
+impl<'extvec, T:  Clone> DerefMut for CowVecItemWrapper<'extvec,T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         if self.owned {
             // Safe because we know that CowVec must still be alive since
@@ -250,7 +250,7 @@ impl<'extvec, T: 'static + Clone> DerefMut for CowVecItemWrapper<'extvec,T> {
         }
     }
 }
-impl<'extvec, T: 'static + Clone> CowVecMain<'extvec, T> {
+impl<'extvec, T: Clone> CowVecMain<'extvec, T> {
     fn is_owned(&self) -> bool {
         match &self.content {
             CowVecContent::Owned(_) => true,
@@ -262,7 +262,7 @@ impl<'extvec, T: 'static + Clone> CowVecMain<'extvec, T> {
     }
 }
 
-impl<'extvec, T: 'static + Clone> CowVec<'extvec, T> {
+impl<'extvec, T: Clone> CowVec<'extvec, T> {
     /// Immediately take ownership.
     pub fn ensure_owned(&mut self) {
         self.main.content.ensure_owned();
@@ -357,13 +357,13 @@ impl<'extvec, T: 'static + Clone> CowVec<'extvec, T> {
 
 /// Mutable smart iterator over a CowVec. This is an internal
 /// detail that shouldn't be used directly.
-pub struct CowVecIter<'extvec,'cowvec,T:'static> { // The lifetime 'cowvec is the lifetime of CowVec object itself
+pub struct CowVecIter<'extvec,'cowvec,T> { // The lifetime 'cowvec is the lifetime of CowVec object itself
     cowvec: *mut CowVecMain<'extvec, T>,
     bad_wrapper_use_detector: *mut WrapperState,
     phantom: PhantomData<&'cowvec ()>,
 }
 
-impl<'extvec, 'cowvec, T: 'static + Clone> Iterator for CowVecIter<'extvec,'cowvec,T> where
+impl<'extvec, 'cowvec, T: Clone> Iterator for CowVecIter<'extvec,'cowvec,T> where
     'extvec:'cowvec,
 
 {
