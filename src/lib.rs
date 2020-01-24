@@ -64,11 +64,14 @@ actually going to write to them).
 
 # Multithreading
 
-CowVec is neither [Send](std::marker::Send) nor [Sync](std::marker::Sync). This means that it cannot
-be passed across threads. The reason for this is that two wrapper objects returned by the iter_mut
-method, could in principle be sent to different threads, and if ownership needs to be taken, there
-would be unsynchronized attempts to clone the borrowed Vec.
+CowVec is [Send](std::marker::Send) and [Sync](std::marker::Sync) if its contents are.
 
+This is thought to be safe, only because it is not possible to have multiple iterated values
+alive. Otherwise, different values could be sent to different threads, and simultaneously
+attempt to take ownership.
+
+Since only one value can be alive at the same time, it should be safe to create an iterator,
+get a value, send the value to another thread, and take ownership in this other thread.
 */
 
 use std::marker::PhantomData;
@@ -104,7 +107,7 @@ pub struct CowVec<'extvec, T: 'static> {
     bad_wrapper_use_detector: WrapperState,
 }
 
-
+// The lifetime 'extvec is the lifetime of the borrowed external vector.
 impl<'extvec, T: 'static + Clone> CowVecContent<'extvec, T> {
     fn mut_pointer(&mut self) -> (*mut T, usize) {
         match self {
@@ -135,17 +138,16 @@ impl<'extvec, T: 'static + Clone> CowVecContent<'extvec, T> {
 
 /// A placeholder representing a value being iterated over - the return value of the next()
 /// function on [CowVecIter](crate::CowVecIter)
-pub struct CowVecItemWrapper<'extvec, 'c, T: 'static> {
+pub struct CowVecItemWrapper<'extvec, T: 'static> {
     item: *mut T,
     end: *mut T,
     cowvec: *mut CowVecMain<'extvec, T>,
     owned: bool,
     bad_wrapper_use_detector: *mut WrapperState,
-    phantom: PhantomData<&'c mut ()>
 }
 
 
-impl<'extvec,'c,T:'static> Drop for CowVecItemWrapper<'extvec,'c,T> {
+impl<'extvec,T:'static> Drop for CowVecItemWrapper<'extvec,T> {
     fn drop(&mut self) {
         // Safe since the originating CowVec and both possible referenced slices
         // (owned or borrowed) must still be alive because of lifetime constraints
@@ -174,7 +176,7 @@ impl<'extvec, T: 'static + Clone> DerefMut for CowVec<'extvec, T> {
     }
 }
 
-impl<'extvec, 'c, T: 'static + Clone> Deref for CowVecItemWrapper<'extvec,'c, T> {
+impl<'extvec, T: 'static + Clone> Deref for CowVecItemWrapper<'extvec,T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
         // Safe because we know that CowVec must still be alive since
@@ -184,7 +186,7 @@ impl<'extvec, 'c, T: 'static + Clone> Deref for CowVecItemWrapper<'extvec,'c, T>
     }
 }
 
-impl<'extvec,'c, T: 'static + Clone> DerefMut for CowVecItemWrapper<'extvec,'c, T> {
+impl<'extvec, T: 'static + Clone> DerefMut for CowVecItemWrapper<'extvec,T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         if self.owned {
             // Safe because we know that CowVec must still be alive since
@@ -310,10 +312,7 @@ impl<'extvec, T: 'static + Clone> CowVec<'extvec, T> {
     /// Iterate mutable over the CowVec, returning wrapped values which
     /// implement DerefMut. If the returned wrapped value is accessed mutably, and not
     /// only read, the CowVec will clone its contents and take ownership of the clone.
-    pub fn iter_mut<'b,'c,'c1>(&'c mut self) -> CowVecIter<'extvec,'b,'c1,T> where
-    'c:'c1,
-    'extvec:'c
-
+    pub fn iter_mut<'cowvec>(&'cowvec mut self) -> CowVecIter<'extvec,'cowvec,T>
     {
         if self.bad_wrapper_use_detector != WrapperState::Dead {
             unreachable!("cow_vec_item: iter_mut was called while wrappers from a previous iter_mut were still alive! I had expected rust ownership rules to make this impossible. Please file a bug!");
@@ -334,7 +333,6 @@ impl<'extvec, T: 'static + Clone> CowVec<'extvec, T> {
             cowvec: &mut self.main as *mut CowVecMain<T>,
             bad_wrapper_use_detector: &mut self.bad_wrapper_use_detector as *mut WrapperState,
             phantom: PhantomData,
-            phantom2: PhantomData
         }
     }
 
@@ -345,10 +343,9 @@ impl<'extvec, T: 'static + Clone> CowVec<'extvec, T> {
     /// ownership unless necessary. This method can be useful though, since the
     /// reduced book-keeping makes it run faster.
     ///
-    pub fn eager_cloned_iter_mut<'b, 'b1>(&'b mut self) -> impl Iterator<Item = &mut T>
+    pub fn eager_cloned_iter_mut<'cowvec>(&'cowvec mut self) -> impl Iterator<Item = &mut T>
     where
-        'extvec: 'b,
-        'b: 'b1,
+        'extvec: 'cowvec,
     {
         self.main.content.ensure_owned();
         match &mut self.main.content {
@@ -360,22 +357,20 @@ impl<'extvec, T: 'static + Clone> CowVec<'extvec, T> {
 
 /// Mutable smart iterator over a CowVec. This is an internal
 /// detail that shouldn't be used directly.
-pub struct CowVecIter<'extvec,'b,'c,T:'static> {
+pub struct CowVecIter<'extvec,'cowvec,T:'static> { // The lifetime 'cowvec is the lifetime of CowVec object itself
     cowvec: *mut CowVecMain<'extvec, T>,
     bad_wrapper_use_detector: *mut WrapperState,
-    phantom: PhantomData<&'b ()>,
-    phantom2: PhantomData<&'c ()>,
-
+    phantom: PhantomData<&'cowvec ()>,
 }
 
-impl<'extvec, 'b, 'c, T: 'static + Clone> Iterator for CowVecIter<'extvec,'b,'c,T> where
-    'extvec:'b,
-'b:'c
+impl<'extvec, 'cowvec, T: 'static + Clone> Iterator for CowVecIter<'extvec,'cowvec,T> where
+    'extvec:'cowvec,
+
 {
-    type Item = CowVecItemWrapper<'extvec,'c, T>;
+    type Item = CowVecItemWrapper<'extvec,T>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Safety: Cowvec must still be alive because of lifetime 'b
+        // Safety: Cowvec must still be alive because of lifetime 'cowvec
         let theref = unsafe {&mut *self.cowvec };
         if * unsafe{(&*self.bad_wrapper_use_detector)} != WrapperState::Dead {
             panic!("cow_vec_iterm: The placeholders returned by the mutable iterator of CowVec must not be retained. Only one wrapper can be alive at a time, but next() was called while the previous value had not been dropped.");
@@ -395,7 +390,6 @@ impl<'extvec, 'b, 'c, T: 'static + Clone> Iterator for CowVecIter<'extvec,'b,'c,
             owned: theref.is_owned(),
             end: theref.end,
             cowvec: self.cowvec,
-            phantom: PhantomData
         };
 
         Some(retval)
