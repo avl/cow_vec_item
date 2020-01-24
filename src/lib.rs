@@ -1,3 +1,4 @@
+#![feature(test)]
 #![deny(missing_docs)]
 #![deny(warnings)]
 /*!
@@ -148,7 +149,7 @@ pub struct CowVecItemWrapper<'extvec, 'cowvec, T> {
     phantom: PhantomData<&'cowvec mut ()>,
 }
 
-impl<'extvec, 'cowvec, T> Drop for CowVecItemWrapper<'extvec,'cowvec, T> {
+impl<'extvec, 'cowvec, T> Drop for CowVecItemWrapper<'extvec, 'cowvec, T> {
     fn drop(&mut self) {
         // Safe since the originating CowVec and both possible referenced slices
         // (owned or borrowed) must still be alive because of lifetime constraints
@@ -311,8 +312,7 @@ impl<'extvec, T: Clone> CowVec<'extvec, T> {
     /// Iterate mutable over the CowVec, returning wrapped values which
     /// implement DerefMut. If the returned wrapped value is accessed mutably, and not
     /// only read, the CowVec will clone its contents and take ownership of the clone.
-    pub fn iter_mut<'cowvec>(&'cowvec mut self) -> CowVecIter<'extvec, 'cowvec, T>
-    {
+    pub fn iter_mut<'cowvec>(&'cowvec mut self) -> CowVecIter<'extvec, 'cowvec, T> {
         if self.bad_wrapper_use_detector != WrapperState::Dead {
             unreachable!("cow_vec_item: iter_mut was called while wrappers from a previous iter_mut were still alive! I had expected rust ownership rules to make this impossible. Please file a bug!");
         }
@@ -327,7 +327,6 @@ impl<'extvec, T: Clone> CowVec<'extvec, T> {
 
         self.main.item = ptr;
         self.main.end = end;
-
 
         CowVecIter {
             cowvec: &mut self.main as *mut CowVecMain<T>,
@@ -373,6 +372,7 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         // Safety: Cowvec must still be alive because of lifetime 'cowvec
         let theref = unsafe { &mut *self.cowvec };
+
         if *unsafe { (&*self.bad_wrapper_use_detector) } != WrapperState::Dead {
             panic!("cow_vec_iterm: The placeholders returned by the mutable iterator of CowVec must not be retained. Only one wrapper can be alive at a time, but next() was called while the previous value had not been dropped.");
         }
@@ -459,9 +459,8 @@ mod tests {
             {
                 let mut wrapper;
                 let mut iter_a = temp.iter_mut();
-                wrapper=iter_a.next().unwrap();
+                wrapper = iter_a.next().unwrap();
                 *wrapper = 73;
-
             }
             let mut iter_b = temp.iter_mut();
             let _first = iter_b.next().unwrap();
@@ -480,9 +479,8 @@ mod tests {
             {
                 let mut wrapper;
                 iter_a = temp.iter_mut();
-                wrapper=iter_a.next().unwrap();
+                wrapper = iter_a.next().unwrap();
                 *wrapper = 73;
-
             }
             let _x = iter_a;
         }
@@ -490,7 +488,6 @@ mod tests {
 
     #[test]
     fn test_cornercase3() {
-
         let mut v = Vec::new();
         {
             let mut temp;
@@ -633,5 +630,42 @@ mod tests {
 
         assert_eq!(temp[0], 3);
         assert_eq!(temp[1], 4);
+    }
+
+    extern crate test;
+
+    use test::Bencher;
+
+    #[bench]
+    fn bench_cowvec(b: &mut Bencher) {
+        let mut thevec2 = Vec::new();
+        for _ in 0..1000 {
+            thevec2.push(32i128);
+        }
+        let mut thevec= CowVec::from(&thevec2);
+
+        b.iter(|| {
+            let mut sum = 0;
+            for item in thevec.iter_mut() {
+                sum += *item;
+            }
+            sum
+        });
+    }
+    #[bench]
+    fn bench_vec(b: &mut Bencher) {
+        let mut thevec = Vec::new();
+        for _ in 0..1000 {
+            thevec.push(32i128);
+        }
+
+        b.iter(|| {
+            let mut sum = 0;
+            let mut thevec = thevec.to_vec();
+            for item in thevec.iter_mut() {
+                sum += *item;
+            }
+            sum
+        });
     }
 }
