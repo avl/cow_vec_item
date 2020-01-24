@@ -74,8 +74,6 @@ would be unsynchronized attempts to clone the borrowed Vec.
 use std::marker::PhantomData;
 use std::mem;
 use std::ops::{Deref, DerefMut};
-use std::rc::Rc;
-use std::cell::{Cell};
 
 
 
@@ -90,18 +88,24 @@ enum WrapperState {
     Dead,
 }
 
-/// A copy-on-write wrapper around a [Vec<T>](std::vec::Vec).
-pub struct CowVec<'a, T: 'static> {
-    content: CowVecContent<'a, T>,
+/// An internal helper class
+pub struct CowVecMain<'extvec,T:'static> {
+    content: CowVecContent<'extvec, T>,
 
     // Iter
     item: *mut T,
     end: *mut T,
-    bad_wrapper_use_detector: Rc<Cell<WrapperState>>,
+
+}
+
+/// A copy-on-write wrapper around a [Vec<T>](std::vec::Vec).
+pub struct CowVec<'extvec, T: 'static> {
+    main : CowVecMain<'extvec,T>,
+    bad_wrapper_use_detector: WrapperState,
 }
 
 
-impl<'a, T: 'static + Clone> CowVecContent<'a, T> {
+impl<'extvec, T: 'static + Clone> CowVecContent<'extvec, T> {
     fn mut_pointer(&mut self) -> (*mut T, usize) {
         match self {
             CowVecContent::Owned(v) => (v.as_mut_ptr(), v.len()),
@@ -131,52 +135,61 @@ impl<'a, T: 'static + Clone> CowVecContent<'a, T> {
 
 /// A placeholder representing a value being iterated over - the return value of the next()
 /// function on [CowVecIter](crate::CowVecIter)
-pub struct CowVecItemWrapper<'a, 'c, T: 'static> {
+pub struct CowVecItemWrapper<'extvec, 'c, T: 'static> {
     item: *mut T,
     end: *mut T,
-    cowvec: *mut CowVec<'a, T>,
+    cowvec: *mut CowVecMain<'extvec, T>,
     owned: bool,
-    bad_wrapper_use_detector: Rc<Cell<WrapperState>>,
+    bad_wrapper_use_detector: *mut WrapperState,
     phantom: PhantomData<&'c mut ()>
 }
 
 
-impl<'a,'c,T:'static> Drop for CowVecItemWrapper<'a,'c,T> {
+impl<'extvec,'c,T:'static> Drop for CowVecItemWrapper<'extvec,'c,T> {
     fn drop(&mut self) {
-        self.bad_wrapper_use_detector.set(WrapperState::Dead);
+        // Safe since the originating CowVec and both possible referenced slices
+        // (owned or borrowed) must still be alive because of lifetime constraints
+        // of CowVecItemWrapper.
+        *unsafe{(&mut *self.bad_wrapper_use_detector)} = WrapperState::Dead;
     }
 }
-impl<'a, T: 'static + Clone> Deref for CowVec<'a, T> {
+impl<'extvec, T: 'static + Clone> Deref for CowVec<'extvec, T> {
     type Target = Vec<T>;
 
     fn deref(&self) -> &Self::Target {
-        match &self.content {
+        match &self.main.content {
             CowVecContent::Owned(v) => v,
             CowVecContent::Borrowed(v) => *v,
         }
     }
 }
 
-impl<'a, T: 'static + Clone> DerefMut for CowVec<'a, T> {
+impl<'extvec, T: 'static + Clone> DerefMut for CowVec<'extvec, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.content.ensure_owned();
-        match &mut self.content {
+        self.main.content.ensure_owned();
+        match &mut self.main.content {
             CowVecContent::Owned(v) => return v,
             _ => unreachable!(),
         }
     }
 }
 
-impl<'a, 'c, T: 'static + Clone> Deref for CowVecItemWrapper<'a,'c, T> {
+impl<'extvec, 'c, T: 'static + Clone> Deref for CowVecItemWrapper<'extvec,'c, T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
+        // Safe because we know that CowVec must still be alive since
+        // the lifetime of originating CowVec is known to outlive the values
+        // returned from the iterator.
         unsafe { &*self.item }
     }
 }
 
-impl<'a,'c, T: 'static + Clone> DerefMut for CowVecItemWrapper<'a,'c, T> {
+impl<'extvec,'c, T: 'static + Clone> DerefMut for CowVecItemWrapper<'extvec,'c, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         if self.owned {
+            // Safe because we know that CowVec must still be alive since
+            // the lifetime of originating CowVec is known to outlive the values
+            // returned from the iterator.
             unsafe { &mut *self.item }
 
         } else {
@@ -186,7 +199,10 @@ impl<'a,'c, T: 'static + Clone> DerefMut for CowVecItemWrapper<'a,'c, T> {
                 index_offset_from_end_bytes = (self.end as usize).wrapping_sub(self.item as usize);
             }
 
-            let self_parent = unsafe {&mut *self.cowvec }; //unsafe {&mut  **self.parent.get()};
+            // Safe because we know that CowVec must still be alive since
+            // the lifetime of originating CowVec is known to outlive the values
+            // returned from the iterator.
+            let self_parent = unsafe {&mut *self.cowvec };
 
             debug_assert!(self_parent.is_owned()==false);
             self_parent.ensure_owned();
@@ -196,6 +212,11 @@ impl<'a,'c, T: 'static + Clone> DerefMut for CowVecItemWrapper<'a,'c, T> {
                 let old_index_offset_from_end_bytes =
                     index_offset_from_end_bytes / (std::mem::size_of::<T>().max(1)); // Does a better way exist on stable?
 
+
+                // The following unsafe pointer arithmetic is safe since we know the slice
+                // operated on is still alive (either owned or borrowed), and there can be
+                // no over- or underflow since the slice is borrowed and thus its length and
+                // address is immutable.
                 let item = if mem::size_of::<T>() == 0 {
                     (ptr as *mut u8).wrapping_add(len - old_index_offset_from_end_bytes) as *mut T
                 } else {
@@ -221,20 +242,33 @@ impl<'a,'c, T: 'static + Clone> DerefMut for CowVecItemWrapper<'a,'c, T> {
                 self.item = item;
                 self.end = end;
             }
+            // Safe since the originating CowVec and both possible referenced slices
+            // (owned or borrowed) must still be alive.
             unsafe { &mut *self.item }
         }
     }
 }
+impl<'extvec, T: 'static + Clone> CowVecMain<'extvec, T> {
+    fn is_owned(&self) -> bool {
+        match &self.content {
+            CowVecContent::Owned(_) => true,
+            CowVecContent::Borrowed(_) => false,
+        }
+    }
+    fn ensure_owned(&mut self) {
+        self.content.ensure_owned();
+    }
+}
 
-impl<'a, T: 'static + Clone> CowVec<'a, T> {
+impl<'extvec, T: 'static + Clone> CowVec<'extvec, T> {
     /// Immediately take ownership.
     pub fn ensure_owned(&mut self) {
-        self.content.ensure_owned();
+        self.main.content.ensure_owned();
     }
     /// Returns true if the contents are owned. This can be used to determine
     /// if the CowVec still borrows the initial Vec.
     pub fn is_owned(&self) -> bool {
-        match &self.content {
+        match &self.main.content {
             CowVecContent::Owned(_) => true,
             CowVecContent::Borrowed(_) => false,
         }
@@ -242,7 +276,7 @@ impl<'a, T: 'static + Clone> CowVec<'a, T> {
     /// If CowVec does not yet own its contents, the borrowed Vec is cloned, and
     /// CowVec takes ownership of the clone. After this, is_owned will return true.
     pub fn into_owned(self) -> Vec<T> {
-        match self.content {
+        match self.main.content {
             CowVecContent::Owned(v) => v,
             CowVecContent::Borrowed(v) => v.to_vec(),
         }
@@ -250,62 +284,61 @@ impl<'a, T: 'static + Clone> CowVec<'a, T> {
     /// Creates a CowVec, immediately taking ownership of the given Vec.
     /// This could be useful in some situations, but the primary value of
     /// CowVec is to create instances using the from-method instead.
-    pub fn from_owned(vec: Vec<T>) -> CowVec<'a, T> {
+    pub fn from_owned(vec: Vec<T>) -> CowVec<'extvec, T> {
         CowVec {
-            content: CowVecContent::Owned(vec),
-            item: std::ptr::null_mut(),
-            end: std::ptr::null_mut(),
-            bad_wrapper_use_detector: Rc::new(Cell::new(WrapperState::Dead)),
+            main: CowVecMain {
+                content: CowVecContent::Owned(vec),
+                item: std::ptr::null_mut(),
+                end: std::ptr::null_mut(),
+            },
+            bad_wrapper_use_detector: WrapperState::Dead,
         }
     }
     /// Creates a CowVec which borrows the given Vec. The first time the CowVec
     /// is mutated, the borrowed Vec is cloned and subsequent accesses refer
     /// to the clone instead.
-    pub fn from(vec: &'a Vec<T>) -> CowVec<'a, T> {
+    pub fn from(vec: &'extvec Vec<T>) -> CowVec<'extvec, T> {
         CowVec {
-            content: CowVecContent::Borrowed(vec),
-            item: std::ptr::null_mut(),
-            end: std::ptr::null_mut(),
-            bad_wrapper_use_detector: Rc::new(Cell::new(WrapperState::Dead)),
+            main: CowVecMain {
+                content: CowVecContent::Borrowed(vec),
+                item: std::ptr::null_mut(),
+                end: std::ptr::null_mut(),
+            },
+            bad_wrapper_use_detector: WrapperState::Dead,
         }
     }
     /// Iterate mutable over the CowVec, returning wrapped values which
     /// implement DerefMut. If the returned wrapped value is accessed mutably, and not
     /// only read, the CowVec will clone its contents and take ownership of the clone.
-    pub fn iter_mut<'b,'c,'c1>(&'c mut self) -> CowVecIter<'a,'b,'c1,T> where
-    'c:'c1
+    pub fn iter_mut<'b,'c,'c1>(&'c mut self) -> CowVecIter<'extvec,'b,'c1,T> where
+    'c:'c1,
+    'extvec:'c
 
     {
-        if (*self.bad_wrapper_use_detector).get() != WrapperState::Dead {
+        if self.bad_wrapper_use_detector != WrapperState::Dead {
             unreachable!("cow_vec_item: iter_mut was called while wrappers from a previous iter_mut were still alive! I had expected rust ownership rules to make this impossible. Please file a bug!");
         }
 
-        let (ptr, len) = self.content.mut_pointer();
+        let (ptr, len) = self.main.content.mut_pointer();
         let end = if mem::size_of::<T>() == 0 {
             (ptr as *mut u8).wrapping_add(self.len()) as *mut T
         } else {
+            // Safety: Just pointer arithmetic. Slice address and length are immutable because of lifetimes.
             unsafe { ptr.add(len) }
         };
 
-        self.item = ptr;
-        self.end = end;
+        self.main.item = ptr;
+        self.main.end = end;
 
         CowVecIter {
-            bad_wrapper_use_detector: Rc::clone(&self.bad_wrapper_use_detector),
-            cowvec: unsafe { std::mem::transmute(self) },
+            cowvec: &mut self.main as *mut CowVecMain<T>,
+            bad_wrapper_use_detector: &mut self.bad_wrapper_use_detector as *mut WrapperState,
             phantom: PhantomData,
             phantom2: PhantomData
         }
-
-        /*        CowVecIter {
-            item: ptr,
-            end: end,
-            parent: self as *mut CowVec<T>,
-            owned: self.is_owned(),
-            phantom: PhantomData,
-        }*/
     }
-    /// Iterate mutable over the CowVec, returning mutable references.
+
+    /// Iterate mutably over the CowVec, returning mutable references.
     /// This method immediately, eagerly, takes ownership of the wrapped
     /// Vec (cloning if necessary).
     /// In most cases what you want is the iter_mut method, which can avoid taking
@@ -314,56 +347,54 @@ impl<'a, T: 'static + Clone> CowVec<'a, T> {
     ///
     pub fn eager_cloned_iter_mut<'b, 'b1>(&'b mut self) -> impl Iterator<Item = &mut T>
     where
-        'a: 'b,
+        'extvec: 'b,
         'b: 'b1,
     {
-        self.content.ensure_owned();
-        match &mut self.content {
+        self.main.content.ensure_owned();
+        match &mut self.main.content {
             CowVecContent::Owned(v) => v.iter_mut(),
             CowVecContent::Borrowed(_) => unreachable!(),
         }
     }
 }
 
-/// An iterator over a CowVec
-pub struct CowVecIter<'a,'b,'c,T:'static> {
-    cowvec: *mut CowVec<'a, T>,
-    bad_wrapper_use_detector: Rc<Cell<WrapperState>>,
+/// Mutable smart iterator over a CowVec. This is an internal
+/// detail that shouldn't be used directly.
+pub struct CowVecIter<'extvec,'b,'c,T:'static> {
+    cowvec: *mut CowVecMain<'extvec, T>,
+    bad_wrapper_use_detector: *mut WrapperState,
     phantom: PhantomData<&'b ()>,
     phantom2: PhantomData<&'c ()>,
 
 }
 
-impl<'a, 'b, 'c, T: 'static + Clone> Iterator for CowVecIter<'a,'b,'c,T> where
-'a:'b,
+impl<'extvec, 'b, 'c, T: 'static + Clone> Iterator for CowVecIter<'extvec,'b,'c,T> where
+    'extvec:'b,
 'b:'c
-/*where
-    'a: 'b,
-    'b: 'c,
-    'a: 'c*/
 {
-    type Item = CowVecItemWrapper<'a,'c, T>;
+    type Item = CowVecItemWrapper<'extvec,'c, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if (*self.bad_wrapper_use_detector).get() != WrapperState::Dead {
+        // Safety: Cowvec must still be alive because of lifetime 'b
+        let theref = unsafe {&mut *self.cowvec };
+        if * unsafe{(&*self.bad_wrapper_use_detector)} != WrapperState::Dead {
             panic!("cow_vec_iterm: The placeholders returned by the mutable iterator of CowVec must not be retained. Only one wrapper can be alive at a time, but next() was called while the previous value had not been dropped.");
         }
-        let theref = unsafe {&mut *self.cowvec }; //unsafe {&mut **self.theref.get()};
         if theref.item == theref.end {
 
             return None;
         }
 
         let self_item = theref.item;
-        theref.bad_wrapper_use_detector.set(WrapperState::Alive);
+        *unsafe {&mut *self.bad_wrapper_use_detector} = WrapperState::Alive;
         theref.item = theref.item.wrapping_add(1);
 
         let retval = CowVecItemWrapper {
             item: self_item,
-            bad_wrapper_use_detector: Rc::clone(&theref.bad_wrapper_use_detector),
+            bad_wrapper_use_detector: self.bad_wrapper_use_detector,
             owned: theref.is_owned(),
             end: theref.end,
-            cowvec: theref, //unsafe { std::mem::transmute(*self as *mut CowVec<'a, T>) },
+            cowvec: self.cowvec,
             phantom: PhantomData
         };
 
