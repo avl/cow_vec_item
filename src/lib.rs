@@ -193,6 +193,7 @@ impl<'extvec, T: Clone> DerefMut for CowVec<'extvec, T> {
 
 impl<'extvec, 'cowvec, T: Clone> Deref for CowVecItemWrapper<'extvec, 'cowvec, T> {
     type Target = T;
+    #[inline]
     fn deref(&self) -> &Self::Target {
         // Safe because we know that CowVec must still be alive since
         // the lifetime of originating CowVec is known to outlive the values
@@ -202,6 +203,7 @@ impl<'extvec, 'cowvec, T: Clone> Deref for CowVecItemWrapper<'extvec, 'cowvec, T
 }
 
 impl<'extvec, 'cowvec, T: Clone> DerefMut for CowVecItemWrapper<'extvec, 'cowvec, T> {
+    #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         if self.owned {
             // Safe because we know that CowVec must still be alive since
@@ -263,6 +265,7 @@ impl<'extvec, 'cowvec, T: Clone> DerefMut for CowVecItemWrapper<'extvec, 'cowvec
     }
 }
 impl<'extvec, T: Clone> CowVecMain<'extvec, T> {
+    #[inline]
     fn is_owned(&self) -> bool {
         match &self.content {
             CowVecContent::Owned(_) => true,
@@ -392,6 +395,7 @@ where
         let size = (theref.end as usize - theref.item as usize) / (std::mem::size_of::<T>().max(1));
         (size,Some(size))
     }
+    #[inline]
     fn for_each<F>(self, mut f: F) where F: FnMut(Self::Item) {
         let theref = unsafe { &mut *self.cowvec };
         if *unsafe { (&*self.bad_wrapper_use_detector) } != WrapperState::Dead {
@@ -416,6 +420,7 @@ where
         }
     }
 
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         // Safety: Cowvec must still be alive because of lifetime 'cowvec
         let theref = unsafe { &mut *self.cowvec };
@@ -772,6 +777,22 @@ mod tests {
         });
     }
     #[bench]
+    fn bench_cowvec_for_each(b: &mut Bencher) {
+        let mut thevec2 = Vec::new();
+        for _ in 0..1000 {
+            thevec2.push(32i128);
+        }
+        let mut thevec= CowVec::from(&thevec2);
+
+        b.iter(|| {
+            let mut sum = 0;
+            thevec.iter_mut().for_each(|item|{
+                sum += *item;
+            });
+            sum
+        });
+    }
+    #[bench]
     fn bench_vec(b: &mut Bencher) {
         let mut thevec = Vec::new();
         for _ in 0..1000 {
@@ -784,6 +805,22 @@ mod tests {
             for item in thevec.iter_mut() {
                 sum += *item;
             }
+            sum
+        });
+    }
+    #[bench]
+    fn bench_vec_for_each(b: &mut Bencher) {
+        let mut thevec = Vec::new();
+        for _ in 0..1000 {
+            thevec.push(32i128);
+        }
+
+        b.iter(|| {
+            let mut sum = 0;
+            let mut thevec = thevec.to_vec();
+            thevec.iter_mut().for_each(|item|{
+                sum += *item;
+            });
             sum
         });
     }
