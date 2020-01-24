@@ -78,6 +78,19 @@ attempt to take ownership.
 
 Since only one value can be alive at the same time, it should be safe to create an iterator,
 get a value, send the value to another thread, and take ownership in this other thread.
+
+# Performance
+
+Performance overhead is, unfortunately, significant for the main use case, lazy
+cloning while iterating using the iter_mut method.
+
+Disabling the safety checks (i.e, by modifying the code, this is not configurable right now) yields
+a factor 2 speedup, but safety is usually more important.
+
+The crate can still be valuable for saving memory, but will typically only increase performance for
+vectors with large elements, where copying eagerly would be expensive and most runs don't need
+copying.
+
 */
 
 use std::marker::PhantomData;
