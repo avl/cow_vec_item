@@ -37,6 +37,11 @@ for item in copy_on_write_ref.iter() {
     println!("Animal: {}", item); //Don't worry, no dragons here
 }
 
+// You can also get an owned vector, in this example only when changes were detected
+if copy_on_write_ref.is_owned() {
+    let my_private_vec : Vec<&str> = copy_on_write_ref.to_owned();
+}
+
 
 ```
 
