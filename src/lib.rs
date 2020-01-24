@@ -382,6 +382,40 @@ where
 {
     type Item = CowVecItemWrapper<'extvec, 'cowvec, T>;
 
+
+    fn count(self) -> usize {
+        let theref = unsafe{&*self.cowvec};
+        (theref.end as usize - theref.item as usize) / (std::mem::size_of::<T>().max(1))
+    }
+    fn size_hint(&self) -> (usize,Option<usize>) {
+        let theref = unsafe{&*self.cowvec};
+        let size = (theref.end as usize - theref.item as usize) / (std::mem::size_of::<T>().max(1));
+        (size,Some(size))
+    }
+    fn for_each<F>(self, mut f: F) where F: FnMut(Self::Item) {
+        let theref = unsafe { &mut *self.cowvec };
+        if *unsafe { (&*self.bad_wrapper_use_detector) } != WrapperState::Dead {
+            panic!("cow_vec_iterm: The placeholders returned by the mutable iterator of CowVec must not be retained. Only one wrapper can be alive at a time, but next() was called while the previous value had not been dropped.");
+        }
+        loop {
+            if theref.item == theref.end {
+                break;
+            }
+            let self_item = theref.item;
+            theref.item = theref.item.wrapping_add(1);
+            let retval = CowVecItemWrapper {
+                item: self_item,
+                bad_wrapper_use_detector: self.bad_wrapper_use_detector,
+                owned: theref.is_owned(),
+                end: theref.end,
+                cowvec: self.cowvec,
+                phantom: PhantomData,
+            };
+            f(retval);
+
+        }
+    }
+
     fn next(&mut self) -> Option<Self::Item> {
         // Safety: Cowvec must still be alive because of lifetime 'cowvec
         let theref = unsafe { &mut *self.cowvec };
@@ -513,6 +547,24 @@ mod tests {
     }
 
     #[test]
+    fn test_ref_items() {
+        let mut v2 = Vec::new();
+        let mut temp;
+        {
+            let mut v = Vec::new();
+            v.push(32i32);
+            v.push(33i32);
+            v2.push(&v[0]);
+            v2.push(&v[1]);
+
+            temp = CowVec::from(&v2);
+            temp.push(&37);
+
+        }
+
+    }
+
+    #[test]
     fn test_with_empty_vec() {
         let primary: Vec<i32> = vec![];
         let mut cowvec = CowVec::from(&primary);
@@ -551,6 +603,60 @@ mod tests {
             assert_eq!(*iter.next().unwrap(), 32);
         }
         assert_eq!(temp.is_owned(), false);
+    }
+
+    #[test]
+    fn test_iter_count() {
+        let mut v = Vec::new();
+        v.push(32i32);
+        v.push(33i32);
+        let mut temp = CowVec::from(&v);
+        assert_eq!(temp.iter_mut().count(),2);
+        let mut it = temp.iter_mut();
+        it.next().unwrap();
+        assert_eq!(it.size_hint().0,1);
+        assert_eq!(it.size_hint().1,Some(1));
+        assert_eq!(it.count(),1);
+        let mut it = temp.iter_mut();
+        it.next().unwrap();
+        it.next().unwrap();
+        assert_eq!(it.count(),0);
+
+    }
+    #[test]
+    fn test_for_each() {
+        let mut v = Vec::new();
+        v.push(32i32);
+        v.push(33i32);
+
+        let mut temp = CowVec::from(&v);
+        temp.iter_mut().for_each(|mut item|{
+            if *item == 33 {
+                *item = 47;
+            }
+        });
+        let result = temp.to_owned();
+        assert_eq!(result[0],32);
+        assert_eq!(result[1],47);
+
+    }
+    #[test]
+    fn test_for_each_not_always_owning() {
+        let mut v = Vec::new();
+        v.push(32i32);
+        v.push(33i32);
+
+        let mut temp = CowVec::from(&v);
+        temp.iter_mut().for_each(|mut item|{
+            if *item == 35 {
+                *item = 47;
+            }
+        });
+        assert_eq!(temp.is_owned(),false);
+        let result = temp.to_owned();
+        assert_eq!(result[0],32);
+        assert_eq!(result[1],33);
+
     }
     #[test]
     fn test_mut_twice() {
