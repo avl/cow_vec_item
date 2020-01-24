@@ -134,15 +134,16 @@ impl<'extvec, T: Clone> CowVecContent<'extvec, T> {
 
 /// A placeholder representing a value being iterated over - the return value of the next()
 /// function on [CowVecIter](crate::CowVecIter)
-pub struct CowVecItemWrapper<'extvec, T> {
+pub struct CowVecItemWrapper<'extvec, 'cowvec, T> {
     item: *mut T,
     end: *mut T,
     cowvec: *mut CowVecMain<'extvec, T>,
     owned: bool,
     bad_wrapper_use_detector: *mut WrapperState,
+    phantom: PhantomData<&'cowvec mut ()>,
 }
 
-impl<'extvec, T> Drop for CowVecItemWrapper<'extvec, T> {
+impl<'extvec, 'cowvec, T> Drop for CowVecItemWrapper<'extvec,'cowvec, T> {
     fn drop(&mut self) {
         // Safe since the originating CowVec and both possible referenced slices
         // (owned or borrowed) must still be alive because of lifetime constraints
@@ -171,7 +172,7 @@ impl<'extvec, T: Clone> DerefMut for CowVec<'extvec, T> {
     }
 }
 
-impl<'extvec, T: Clone> Deref for CowVecItemWrapper<'extvec, T> {
+impl<'extvec, 'cowvec, T: Clone> Deref for CowVecItemWrapper<'extvec, 'cowvec, T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
         // Safe because we know that CowVec must still be alive since
@@ -181,7 +182,7 @@ impl<'extvec, T: Clone> Deref for CowVecItemWrapper<'extvec, T> {
     }
 }
 
-impl<'extvec, T: Clone> DerefMut for CowVecItemWrapper<'extvec, T> {
+impl<'extvec, 'cowvec, T: Clone> DerefMut for CowVecItemWrapper<'extvec, 'cowvec, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         if self.owned {
             // Safe because we know that CowVec must still be alive since
@@ -305,7 +306,8 @@ impl<'extvec, T: Clone> CowVec<'extvec, T> {
     /// Iterate mutable over the CowVec, returning wrapped values which
     /// implement DerefMut. If the returned wrapped value is accessed mutably, and not
     /// only read, the CowVec will clone its contents and take ownership of the clone.
-    pub fn iter_mut<'cowvec>(&'cowvec mut self) -> CowVecIter<'extvec, 'cowvec, T> {
+    pub fn iter_mut<'cowvec>(&'cowvec mut self) -> CowVecIter<'extvec, 'cowvec, T>
+    {
         if self.bad_wrapper_use_detector != WrapperState::Dead {
             unreachable!("cow_vec_item: iter_mut was called while wrappers from a previous iter_mut were still alive! I had expected rust ownership rules to make this impossible. Please file a bug!");
         }
@@ -320,6 +322,7 @@ impl<'extvec, T: Clone> CowVec<'extvec, T> {
 
         self.main.item = ptr;
         self.main.end = end;
+
 
         CowVecIter {
             cowvec: &mut self.main as *mut CowVecMain<T>,
@@ -353,14 +356,14 @@ pub struct CowVecIter<'extvec, 'cowvec, T> {
     // The lifetime 'cowvec is the lifetime of CowVec object itself
     cowvec: *mut CowVecMain<'extvec, T>,
     bad_wrapper_use_detector: *mut WrapperState,
-    phantom: PhantomData<&'cowvec ()>,
+    phantom: PhantomData<&'cowvec mut ()>,
 }
 
 impl<'extvec, 'cowvec, T: Clone> Iterator for CowVecIter<'extvec, 'cowvec, T>
 where
     'extvec: 'cowvec,
 {
-    type Item = CowVecItemWrapper<'extvec, T>;
+    type Item = CowVecItemWrapper<'extvec, 'cowvec, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
         // Safety: Cowvec must still be alive because of lifetime 'cowvec
@@ -382,6 +385,7 @@ where
             owned: theref.is_owned(),
             end: theref.end,
             cowvec: self.cowvec,
+            phantom: PhantomData,
         };
 
         Some(retval)
@@ -438,6 +442,59 @@ mod tests {
             let mut iter_b = temp.iter();
             assert_eq!(*iter_a.next().unwrap(), *iter_b.next().unwrap());
         }
+    }
+    #[test]
+    fn test_cornercase1() {
+        let mut v = Vec::new();
+        v.push(32i32);
+        v.push(33i32);
+        let mut temp = CowVec::from(&v);
+
+        {
+            {
+                let mut wrapper;
+                let mut iter_a = temp.iter_mut();
+                wrapper=iter_a.next().unwrap();
+                *wrapper = 73;
+
+            }
+            let mut iter_b = temp.iter_mut();
+            let _first = iter_b.next().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_cornercase2() {
+        let mut v = Vec::new();
+        v.push(32i32);
+        v.push(33i32);
+        let mut temp = CowVec::from(&v);
+
+        {
+            let mut iter_a;
+            {
+                let mut wrapper;
+                iter_a = temp.iter_mut();
+                wrapper=iter_a.next().unwrap();
+                *wrapper = 73;
+
+            }
+            let _x = iter_a;
+        }
+    }
+
+    #[test]
+    fn test_cornercase3() {
+
+        let mut v = Vec::new();
+        {
+            let mut temp;
+            v.push(32i32);
+            v.push(33i32);
+            temp = CowVec::from(&v);
+            let _val = temp.iter_mut().next().unwrap();
+        }
+        v.push(32);
     }
 
     #[test]
@@ -572,7 +629,4 @@ mod tests {
         assert_eq!(temp[0], 3);
         assert_eq!(temp[1], 4);
     }
-    /*
-
-    */
 }
