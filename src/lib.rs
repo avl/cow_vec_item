@@ -1,5 +1,5 @@
 #![deny(missing_docs)]
-#![deny(warnings)]
+//#![deny(warnings)]
 /*!
 This is the documentation for `cow_vec_item`.
 
@@ -68,7 +68,7 @@ use std::marker::PhantomData;
 use std::mem;
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
-use std::cell::UnsafeCell;
+use std::cell::{UnsafeCell, Cell};
 
 
 
@@ -77,7 +77,7 @@ enum CowVecContent<'a, T: 'static> {
     Borrowed(&'a Vec<T>),
 }
 
-#[derive(Eq,PartialEq)]
+#[derive(Copy,Clone,Eq,PartialEq)]
 enum WrapperState {
     Alive,
     Dead,
@@ -91,7 +91,7 @@ pub struct CowVec<'a, T: 'static> {
     // Iter
     item: *mut T,
     end: *mut T,
-    outstanding_item:WrapperState,
+    counter: Rc<Cell<WrapperState>>,
 
     phantom: PhantomData<Rc<()>>, //so it won't be Sync or Send
 }
@@ -143,17 +143,15 @@ pub struct CowVecItemWrapper<'a, 'c, T: 'static> {
     end: *mut T,
     parent: UnsafeCell<&'c mut CowVec<'a, T>>,
     owned: bool,
+    counter: Rc<Cell<WrapperState>>,
 }
-compile_error!("Fix this")
+
+
 impl<'a,'c,T:'static> Drop for CowVecItemWrapper<'a,'c,T> {
     fn drop(&mut self) {
         println!("Wrapper ends life");
-        let mut t = unsafe { &mut **self.parent.get() } ;
-        if t.outstanding_item == WrapperState::Alive {
-            t.outstanding_item = WrapperState::Dead;
-        } else {
-            panic!("The placeholders returned by the mutable iterator of CowVec must not be retained. Only one wrapper can be alive at a time, but next() was called while the previous value had not been dropped.");
-        }
+        let t = unsafe { &**self.parent.get() } ;
+        t.counter.set(WrapperState::Dead);
     }
 }
 impl<'a, T: 'static + Clone> Deref for CowVec<'a, T> {
@@ -189,6 +187,7 @@ impl<'a,'c, T: 'static + Clone> DerefMut for CowVecItemWrapper<'a,'c, T> {
         if self.owned {
             unsafe { &mut *self.item }
         } else {
+
             let index_offset_from_end_bytes;
             {
                 index_offset_from_end_bytes = (self.end as usize).wrapping_sub(self.item as usize);
@@ -283,7 +282,7 @@ impl<'a, T: 'static + Clone> CowVec<'a, T> {
             phantom: PhantomData,
             item: std::ptr::null_mut(),
             end: std::ptr::null_mut(),
-            outstanding_item: WrapperState::Dead
+            counter: Rc::new(Cell::new(WrapperState::Dead)),
         }
     }
     /// Creates a CowVec which borrows the given Vec. The first time the CowVec
@@ -295,7 +294,7 @@ impl<'a, T: 'static + Clone> CowVec<'a, T> {
             phantom: PhantomData,
             item: std::ptr::null_mut(),
             end: std::ptr::null_mut(),
-            outstanding_item: WrapperState::Dead
+            counter: Rc::new(Cell::new(WrapperState::Dead)),
         }
     }
     /// Iterate mutable over the CowVec, returning wrapped values which
@@ -314,6 +313,7 @@ impl<'a, T: 'static + Clone> CowVec<'a, T> {
         self.end = end;
 
         CowVecRef {
+            counter: Rc::clone(&self.counter),
             theref: UnsafeCell::new(unsafe { std::mem::transmute(self) }),
             phantom: PhantomData
         }
@@ -349,7 +349,9 @@ impl<'a, T: 'static + Clone> CowVec<'a, T> {
 /// Internal magic
 pub struct CowVecRef<'c,'b:'c,'a:'b,T:'static> {
     theref: UnsafeCell<&'c mut CowVec<'a, T>>,
-    phantom: PhantomData<&'b ()>
+    counter: Rc<Cell<WrapperState>>,
+    phantom: PhantomData<&'b ()>,
+
 }
 impl <'a,'b,'c,T:'static> CowVecRef<'a,'b,'c,T> {
 
@@ -364,13 +366,13 @@ where
     type Item = CowVecItemWrapper<'a,'c, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let theref = unsafe {&mut **self.theref.get()};
-        if theref.outstanding_item != WrapperState::Dead {
-            theref.outstanding_item = WrapperState::Poisoned;
+        if (*self.counter).get() != WrapperState::Dead {
+            //self.counter.set(WrapperState::Poisoned);
             //abort();
-            //panic!("Poisin2");
+            panic!("The placeholders returned by the mutable iterator of CowVec must not be retained. Only one wrapper can be alive at a time, but next() was called while the previous value had not been dropped.");
             return None;
         }
+        let theref = unsafe {&mut **self.theref.get()};
         if theref.item == theref.end {
 
             return None;
@@ -378,11 +380,12 @@ where
 
         let self_item = theref.item;
         println!("Wrapper starts life");
-        theref.outstanding_item = WrapperState::Alive;
+        theref.counter.set(WrapperState::Alive);
         theref.item = theref.item.wrapping_add(1);
 
         let retval = CowVecItemWrapper {
             item: self_item,
+            counter: Rc::clone(&theref.counter),
             owned: theref.is_owned(),
             end: theref.end,
             parent: UnsafeCell::new(theref), //unsafe { std::mem::transmute(*self as *mut CowVec<'a, T>) },
@@ -399,7 +402,7 @@ mod tests {
     use std::ops::DerefMut;
 
     #[test]
-    //#[should_panic]
+    #[should_panic]
     fn test_ensure_retaining_iterated_value_causes_panic() {
         let mut v = Vec::new();
         v.push(32i32);
