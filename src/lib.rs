@@ -797,9 +797,12 @@ mod tests {
                 *item = 47;
             }
         });
+        assert!(temp.is_owned());
         let result = temp.to_owned();
         assert_eq!(result[0], 32);
         assert_eq!(result[1], 47);
+        assert_eq!(v[0], 32);
+        assert_eq!(v[1], 33);
     }
     #[test]
     fn test_for_each_not_always_owning() {
@@ -867,17 +870,17 @@ mod tests {
 
         temp.fast_for_each_mut(|item| {
             if **item == 32 {
-                assert_eq!(**item,32);
+                assert_eq!(**item, 32);
                 **item = 46;
-                assert_eq!(**item,46);
+                assert_eq!(**item, 46);
                 **item = 47;
-                assert_eq!(**item,47);
+                assert_eq!(**item, 47);
             } else if **item == 33 {
-                assert_eq!(**item,33);
+                assert_eq!(**item, 33);
                 **item = 45;
-                assert_eq!(**item,45);
+                assert_eq!(**item, 45);
                 **item = 48;
-                assert_eq!(**item,48);
+                assert_eq!(**item, 48);
             } else {
                 unreachable!();
             }
@@ -903,7 +906,6 @@ mod tests {
             **item = 1;
         });
         assert_eq!(temp.is_owned(), false);
-
     }
     #[test]
     #[cfg(not(miri))]
@@ -916,7 +918,7 @@ mod tests {
         impl_fuzz(10);
     }
 
-    fn impl_fuzz(fuzz_iterations:usize) {
+    fn impl_fuzz(fuzz_iterations: usize) {
         let mut seed = 317u32;
         let mut gen_u32 = || {
             let random = &mut seed;
@@ -930,9 +932,9 @@ mod tests {
             let mut v = Vec::new();
             for _ in 0..gen_u32() % 10 {
                 v.push(gen_u32());
-                println!("Pushed: {}",v.last().unwrap());
+                println!("Pushed: {}", v.last().unwrap());
             }
-            println!("Len:{}",v.len());
+            println!("Len:{}", v.len());
 
             let mut clone = v.clone();
             let mut temp = CowVec::from(&v);
@@ -941,7 +943,7 @@ mod tests {
                 for (mut item, reference) in temp.iter_mut().zip(clone.iter_mut()) {
                     match gen_u32() % 5 {
                         0 => {
-                            println!("Modding {}",*item);
+                            println!("Modding {}", *item);
                             *item += 42;
                             *reference += 42;
                         }
@@ -979,6 +981,8 @@ mod tests {
             let mut _it = temp.iter_mut();
         }
         assert_eq!(temp.is_owned(), true);
+        assert_eq!(*v.get(0).unwrap(), 1);
+        assert_eq!(*v.get(1).unwrap(), 2);
 
         {
             let mut iter = temp.iter_mut();
@@ -991,6 +995,8 @@ mod tests {
 
         assert_eq!(temp[0], 3);
         assert_eq!(temp[1], 4);
+        assert_eq!(*v.get(0).unwrap(), 1);
+        assert_eq!(*v.get(1).unwrap(), 2);
     }
 
     extern crate test;
