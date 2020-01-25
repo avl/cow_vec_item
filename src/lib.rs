@@ -97,6 +97,7 @@ use std::marker::PhantomData;
 use std::mem;
 use std::ops::{Deref, DerefMut};
 
+
 enum CowVecContent<'a, T> {
     Owned(Vec<T>),
     Borrowed(&'a Vec<T>),
@@ -115,6 +116,66 @@ pub struct CowVecMain<'extvec, T> {
     // Iter
     item: *mut T,
     end: *mut T,
+}
+
+/// Internal helper struct. Concrete type of argument to user supplied closure in fast_for_each.
+pub struct BorrowedFastForeachItem<'extvec,T:Clone> {
+    main: *mut CowVecMain<'extvec, T>,
+    item: *mut T,
+    end: *mut T
+}
+
+/// Internal helper struct. Concrete type of argument to user supplied closure in fast_for_each.
+pub struct OwnedForEachItem<T:Clone> {
+    item: *mut T,
+}
+/// Internal helper trait, argument to use supplied closure in fast_for_each
+pub trait FastForeachItem : Deref + DerefMut {
+}
+
+impl<'extvec, T:Clone> Deref for BorrowedFastForeachItem<'extvec,T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        unsafe { &*self.item }
+    }
+}
+impl<'extvec, T:Clone> DerefMut for BorrowedFastForeachItem<'extvec,T> {
+    fn deref_mut(&mut self) -> &mut T {
+        let main = unsafe{&mut *self.main};
+        if main.is_owned() {
+            unsafe{&mut *self.item}
+        } else {
+            let index_offset_from_end_bytes = (self.end as usize).wrapping_sub(self.item as usize);
+            main.ensure_owned();
+
+            let (ptr,len) = main.content.mut_pointer();
+            self.end = (ptr as *mut u8).wrapping_add(len*std::mem::size_of::<T>().max(1))as *mut T;
+            self.item = (self.end as *mut u8).wrapping_sub(index_offset_from_end_bytes) as *mut T;
+
+            unsafe{&mut *self.item}
+        }
+    }
+}
+impl<'extvec, T:Clone> FastForeachItem for BorrowedFastForeachItem<'extvec, T> {
+
+}
+
+
+
+
+impl<'extvec, T:Clone> Deref for OwnedForEachItem<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        unsafe { &*self.item }
+    }
+}
+impl<'extvec, T:Clone> DerefMut for OwnedForEachItem<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        unsafe{&mut *self.item}
+    }
+}
+impl<'extvec, T:Clone> FastForeachItem for OwnedForEachItem<T> {
+
 }
 
 /// A copy-on-write wrapper around a [Vec<T>](std::vec::Vec).
@@ -226,7 +287,7 @@ impl<'extvec, 'cowvec, T: Clone> DerefMut for CowVecItemWrapper<'extvec, 'cowvec
             {
                 let (ptr, len) = self_parent.content.mut_pointer();
 
-                let old_index_offset_from_end_bytes =
+                let old_index_offset_from_end =
                     index_offset_from_end_bytes / (std::mem::size_of::<T>().max(1)); // Does a better way exist on stable?
 
                 // The following unsafe pointer arithmetic is safe since we know the slice
@@ -234,9 +295,9 @@ impl<'extvec, 'cowvec, T: Clone> DerefMut for CowVecItemWrapper<'extvec, 'cowvec
                 // no over- or underflow since the slice is borrowed and thus its length and
                 // address is immutable.
                 let item = if mem::size_of::<T>() == 0 {
-                    (ptr as *mut u8).wrapping_add(len - old_index_offset_from_end_bytes) as *mut T
+                    (ptr as *mut u8).wrapping_add(len - old_index_offset_from_end) as *mut T
                 } else {
-                    unsafe { ptr.add(len - old_index_offset_from_end_bytes) }
+                    unsafe { ptr.add(len - old_index_offset_from_end) }
                 };
 
                 let end = if mem::size_of::<T>() == 0 {
@@ -246,10 +307,10 @@ impl<'extvec, 'cowvec, T: Clone> DerefMut for CowVecItemWrapper<'extvec, 'cowvec
                 };
 
                 let parent_item = if mem::size_of::<T>() == 0 {
-                    (ptr as *mut u8).wrapping_add(len - old_index_offset_from_end_bytes + 1)
+                    (ptr as *mut u8).wrapping_add(len - old_index_offset_from_end + 1)
                         as *mut T
                 } else {
-                    unsafe { ptr.add(len - old_index_offset_from_end_bytes + 1) }
+                    unsafe { ptr.add(len - old_index_offset_from_end + 1) }
                 };
 
                 self_parent.item = parent_item;
@@ -276,6 +337,8 @@ impl<'extvec, T: Clone> CowVecMain<'extvec, T> {
         self.content.ensure_owned();
     }
 }
+
+
 
 impl<'extvec, T: Clone> CowVec<'extvec, T> {
     /// Immediately take ownership.
@@ -325,9 +388,60 @@ impl<'extvec, T: Clone> CowVec<'extvec, T> {
             bad_wrapper_use_detector: WrapperState::Dead,
         }
     }
+
+    /// An optimized for_each for CowVec. This has approximately half the overhead
+    /// of iter().for_each(), because it takes advantage of the reduced safety mechanisms
+    /// needed when doing internal iteration.
+    /// It is still completely safe.
+    /// The only use visible difference is that the user supplied closure is given a
+    /// an object which appears to be a reference to a reference to an object, meaning
+    /// you may have to use **item to access it instead of *item.
+    pub fn fast_for_each_mut<F>(&mut self, mut f:F) where
+            F:FnMut(&mut dyn FastForeachItem<Target=T>),
+
+    {
+        let (ptr, len) = self.main.content.mut_pointer();
+        let end = if mem::size_of::<T>() == 0 {
+            (ptr as *mut u8).wrapping_add(self.len() ) as *mut T
+        } else {
+            // Safety: Just pointer arithmetic. Slice address and length are immutable because of lifetimes.
+            unsafe { ptr.add(len) }
+        };
+
+        if self.main.is_owned() {
+            let mut state = BorrowedFastForeachItem {
+                main: &mut self.main,
+                item: ptr,
+                end: end
+            };
+
+            while state.item != state.end {
+                f(&mut state);
+                state.item = state.item.wrapping_add(1);
+            }
+
+        } else {
+            let mut state = OwnedForEachItem {
+                item: ptr,
+            };
+            while state.item != end {
+                f(&mut state);
+                state.item = state.item.wrapping_add(1);
+            }
+
+        }
+
+
+
+
+    }
+
     /// Iterate mutable over the CowVec, returning wrapped values which
     /// implement DerefMut. If the returned wrapped value is accessed mutably, and not
     /// only read, the CowVec will clone its contents and take ownership of the clone.
+    ///
+    /// If you don't need an iterator, but just need to traverse all values,
+    /// it is much faster to use the fast_for_each_mut() method instead.
     pub fn iter_mut<'cowvec>(&'cowvec mut self) -> CowVecIter<'extvec, 'cowvec, T> {
         if self.bad_wrapper_use_detector != WrapperState::Dead {
             unreachable!("cow_vec_item: iter_mut was called while wrappers from a previous iter_mut were still alive! I had expected rust ownership rules to make this impossible. Please file a bug!");
@@ -356,8 +470,7 @@ impl<'extvec, T: Clone> CowVec<'extvec, T> {
     /// Vec (cloning if necessary).
     /// In most cases what you want is the iter_mut method, which can avoid taking
     /// ownership unless necessary. This method can be useful though, since the
-    /// reduced book-keeping makes it run faster.
-    ///
+    /// reduced book-keeping makes it run significantly faster.
     pub fn eager_cloned_iter_mut<'cowvec>(&'cowvec mut self) -> impl Iterator<Item = &mut T>
     where
         'extvec: 'cowvec,
@@ -395,26 +508,55 @@ where
         let size = (theref.end as usize - theref.item as usize) / (std::mem::size_of::<T>().max(1));
         (size,Some(size))
     }
-    #[inline]
-    fn for_each<F>(self, mut f: F) where F: FnMut(Self::Item) {
-        let theref = unsafe { &mut *self.cowvec };
-        if *unsafe { (&*self.bad_wrapper_use_detector) } != WrapperState::Dead {
-            panic!("cow_vec_iterm: The placeholders returned by the mutable iterator of CowVec must not be retained. Only one wrapper can be alive at a time, but next() was called while the previous value had not been dropped.");
-        }
-        loop {
-            if theref.item == theref.end {
-                break;
-            }
-            let self_item = theref.item;
-            theref.item = theref.item.wrapping_add(1);
+
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        let mut theref = unsafe{&mut *self.cowvec};
+        let len = (theref.end as usize - theref.item as usize) / (std::mem::size_of::<T>().max(1));
+        if n >= len {
+            None
+        } else {
+            theref.item = theref.item.wrapping_add(n);
+
             let retval = CowVecItemWrapper {
-                item: self_item,
+                item: theref.item,
                 bad_wrapper_use_detector: self.bad_wrapper_use_detector,
                 owned: theref.is_owned(),
                 end: theref.end,
                 cowvec: self.cowvec,
                 phantom: PhantomData,
             };
+            theref.item = theref.item.wrapping_add(1);
+            Some(retval)
+        }
+    }
+
+    /// Warning, this implementation of for_each is not as fast as it could be.
+    /// Please use CowVec::fast_for_each_mut instead for maximum performance.
+    #[inline]
+    fn for_each<F>(self, mut f: F) where F: FnMut(Self::Item) {
+
+        if *unsafe { (&*self.bad_wrapper_use_detector) } != WrapperState::Dead {
+            panic!("cow_vec_iterm: The placeholders returned by the mutable iterator of CowVec must not be retained. Only one wrapper can be alive at a time, but next() was called while the previous value had not been dropped.");
+        }
+
+        loop {
+            let retval;
+            {
+                let theref = unsafe { &mut *self.cowvec };
+                if theref.item == theref.end {
+                    break;
+                }
+                let self_item = theref.item;
+                theref.item = theref.item.wrapping_add(1);
+                retval = CowVecItemWrapper {
+                    item: self_item,
+                    bad_wrapper_use_detector: self.bad_wrapper_use_detector,
+                    owned: theref.is_owned(),
+                    end: theref.end,
+                    cowvec: self.cowvec,
+                    phantom: PhantomData,
+                };
+            }
             f(retval);
 
         }
@@ -611,7 +753,42 @@ mod tests {
     }
 
     #[test]
-    fn test_iter_count() {
+    fn test_iter_nth() {
+        let mut v = Vec::new();
+        v.push(32i32);
+        v.push(33i32);
+
+        let mut i = v.iter();
+        i.next().unwrap();
+
+        assert_eq!(*i.nth(0).unwrap(), 33);
+        assert_eq!(i.nth(1), None);
+    }
+
+    #[test]
+    fn test_iter_nth2() {
+        let mut v = Vec::new();
+        v.push(32i32);
+        v.push(33i32);
+        v.push(34i32);
+        v.push(35i32);
+
+        let mut cowvec = CowVec::from(&v);
+
+        let mut i = cowvec.iter_mut();
+        let v0 = i.nth(0).unwrap();
+        assert_eq!(*v0,32);
+        let v2 = i.nth(1).unwrap();
+        assert_eq!(*v2,34);
+        let v3 = i.nth(0).unwrap();
+        assert_eq!(*v3,35);
+        let v4 = i.nth(1);
+        assert!(v4.is_none());
+
+    }
+
+    #[test]
+    fn test_iter_count_and_size_hint() {
         let mut v = Vec::new();
         v.push(32i32);
         v.push(33i32);
@@ -626,10 +803,10 @@ mod tests {
         it.next().unwrap();
         it.next().unwrap();
         assert_eq!(it.count(),0);
-
     }
+
     #[test]
-    fn test_for_each() {
+    fn test_for_each_owning() {
         let mut v = Vec::new();
         v.push(32i32);
         v.push(33i32);
@@ -758,12 +935,16 @@ mod tests {
 
     extern crate test;
 
+    #[cfg(not(miri))]
     use test::Bencher;
+    #[cfg(not(miri))]
+    const ITERATIONS:usize = 100;
 
     #[bench]
+    #[cfg(not(miri))]
     fn bench_cowvec(b: &mut Bencher) {
         let mut thevec2 = Vec::new();
-        for _ in 0..1000 {
+        for _ in 0..ITERATIONS {
             thevec2.push(32i128);
         }
         let mut thevec= CowVec::from(&thevec2);
@@ -776,10 +957,29 @@ mod tests {
             sum
         });
     }
+
     #[bench]
+    #[cfg(not(miri))]
+    fn bench_cowvec_eager_iter_mut(b: &mut Bencher) {
+        let mut thevec2 = Vec::new();
+        for _ in 0..ITERATIONS {
+            thevec2.push(32i128);
+        }
+        let mut thevec= CowVec::from(&thevec2);
+
+        b.iter(|| {
+            let mut sum = 0;
+            for item in thevec.eager_cloned_iter_mut() {
+                sum += *item;
+            }
+            sum
+        });
+    }
+    #[bench]
+    #[cfg(not(miri))]
     fn bench_cowvec_for_each(b: &mut Bencher) {
         let mut thevec2 = Vec::new();
-        for _ in 0..1000 {
+        for _ in 0..ITERATIONS {
             thevec2.push(32i128);
         }
         let mut thevec= CowVec::from(&thevec2);
@@ -793,9 +993,61 @@ mod tests {
         });
     }
     #[bench]
+    #[cfg(not(miri))]
+    fn bench_cowvec_fast_for_each(b: &mut Bencher) {
+        let mut thevec2 = Vec::new();
+        for _ in 0..ITERATIONS {
+            thevec2.push(32i128);
+        }
+        let mut thevec= CowVec::from(&thevec2);
+
+        b.iter(|| {
+            let mut sum = 0;
+            thevec.fast_for_each_mut(|item|{
+                sum += **item;
+            });
+            sum
+        });
+    }
+    #[bench]
+    #[cfg(not(miri))]
+    fn bench_cowvec_fast_for_each_owned_case(b: &mut Bencher) {
+        let mut thevec2 = Vec::new();
+        for _ in 0..ITERATIONS {
+            thevec2.push(32i128);
+        }
+        let mut thevec= CowVec::from(&thevec2);
+
+        thevec.ensure_owned();
+        b.iter(|| {
+            let mut sum = 0;
+            thevec.fast_for_each_mut(|item|{
+                sum += **item;
+            });
+            sum
+        });
+    }
+    #[bench]
+    #[cfg(not(miri))]
     fn bench_vec(b: &mut Bencher) {
         let mut thevec = Vec::new();
-        for _ in 0..1000 {
+        for _ in 0..ITERATIONS {
+            thevec.push(32i128);
+        }
+
+        b.iter(|| {
+            let mut sum = 0;
+            for item in thevec.iter_mut() {
+                sum += *item;
+            }
+            sum
+        });
+    }
+    #[bench]
+    #[cfg(not(miri))]
+    fn bench_vec_clone(b: &mut Bencher) {
+        let mut thevec = Vec::new();
+        for _ in 0..ITERATIONS {
             thevec.push(32i128);
         }
 
@@ -805,22 +1057,6 @@ mod tests {
             for item in thevec.iter_mut() {
                 sum += *item;
             }
-            sum
-        });
-    }
-    #[bench]
-    fn bench_vec_for_each(b: &mut Bencher) {
-        let mut thevec = Vec::new();
-        for _ in 0..1000 {
-            thevec.push(32i128);
-        }
-
-        b.iter(|| {
-            let mut sum = 0;
-            let mut thevec = thevec.to_vec();
-            thevec.iter_mut().for_each(|item|{
-                sum += *item;
-            });
             sum
         });
     }
