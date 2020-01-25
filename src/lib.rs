@@ -399,7 +399,7 @@ impl<'extvec, T: Clone> CowVec<'extvec, T> {
             unsafe { ptr.add(len) }
         };
 
-        if self.main.is_owned() {
+        if !self.main.is_owned() {
             let mut state = BorrowedFastForeachItem {
                 main: &mut self.main,
                 item: ptr,
@@ -835,9 +835,88 @@ mod tests {
             *t2 = 2;
         }
     }
+    #[test]
+    fn test_fast_for_each() {
+        let mut v = Vec::new();
+        v.push(32i32);
+        v.push(33i32);
+        let mut temp = CowVec::from(&v);
+        temp.fast_for_each_mut(|_item| {});
+        assert_eq!(temp.is_owned(), false);
+
+        temp.fast_for_each_mut(|item| {
+            if **item == 33 {
+                **item = 47;
+            }
+        });
+        assert_eq!(temp.is_owned(), true);
+
+        assert_eq!(temp[0], 32);
+        assert_eq!(temp[1], 47);
+        assert_eq!(v[0], 32);
+        assert_eq!(v[1], 33);
+    }
+    #[test]
+    fn test_fast_for_each2() {
+        let mut v = Vec::new();
+        v.push(32i32);
+        v.push(33i32);
+        let mut temp = CowVec::from(&v);
+        temp.fast_for_each_mut(|_item| {});
+        assert_eq!(temp.is_owned(), false);
+
+        temp.fast_for_each_mut(|item| {
+            if **item == 32 {
+                assert_eq!(**item,32);
+                **item = 46;
+                assert_eq!(**item,46);
+                **item = 47;
+                assert_eq!(**item,47);
+            } else if **item == 33 {
+                assert_eq!(**item,33);
+                **item = 45;
+                assert_eq!(**item,45);
+                **item = 48;
+                assert_eq!(**item,48);
+            } else {
+                unreachable!();
+            }
+            if **item == 33 {
+                **item = 49;
+            }
+        });
+        assert_eq!(temp.is_owned(), true);
+
+        assert_eq!(temp[0], 47);
+        assert_eq!(temp[1], 48);
+        assert_eq!(v[0], 32);
+        assert_eq!(v[1], 33);
+    }
+    #[test]
+    fn test_fast_for_each_empty() {
+        let v = Vec::new();
+        let mut temp = CowVec::from(&v);
+        temp.fast_for_each_mut(|_item| {});
+        assert_eq!(temp.is_owned(), false);
+
+        temp.fast_for_each_mut(|item| {
+            **item = 1;
+        });
+        assert_eq!(temp.is_owned(), false);
+
+    }
+    #[test]
+    #[cfg(not(miri))]
+    fn test_fuzz() {
+        impl_fuzz(1000);
+    }
 
     #[test]
-    fn test_fuzz() {
+    fn test_short_fuzz() {
+        impl_fuzz(10);
+    }
+
+    fn impl_fuzz(fuzz_iterations:usize) {
         let mut seed = 317u32;
         let mut gen_u32 = || {
             let random = &mut seed;
@@ -847,11 +926,13 @@ mod tests {
             *random
         };
 
-        for _ in 0..100 {
+        for _ in 0..fuzz_iterations {
             let mut v = Vec::new();
             for _ in 0..gen_u32() % 10 {
                 v.push(gen_u32());
+                println!("Pushed: {}",v.last().unwrap());
             }
+            println!("Len:{}",v.len());
 
             let mut clone = v.clone();
             let mut temp = CowVec::from(&v);
@@ -860,6 +941,7 @@ mod tests {
                 for (mut item, reference) in temp.iter_mut().zip(clone.iter_mut()) {
                     match gen_u32() % 5 {
                         0 => {
+                            println!("Modding {}",*item);
                             *item += 42;
                             *reference += 42;
                         }
