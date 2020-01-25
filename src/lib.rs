@@ -932,9 +932,7 @@ mod tests {
             let mut v = Vec::new();
             for _ in 0..gen_u32() % 10 {
                 v.push(gen_u32());
-                println!("Pushed: {}", v.last().unwrap());
             }
-            println!("Len:{}", v.len());
 
             let mut clone = v.clone();
             let mut temp = CowVec::from(&v);
@@ -943,7 +941,6 @@ mod tests {
                 for (mut item, reference) in temp.iter_mut().zip(clone.iter_mut()) {
                     match gen_u32() % 5 {
                         0 => {
-                            println!("Modding {}", *item);
                             *item += 42;
                             *reference += 42;
                         }
