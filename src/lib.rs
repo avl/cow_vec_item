@@ -35,14 +35,19 @@ for mut item in copy_on_write_ref.iter_mut() {
 }
 
 for item in copy_on_write_ref.iter() {
-    println!("Animal: {}", item); //Don't worry, no dragons here
+    println!("Animal: {}", *item); //Don't worry, no dragons here
 }
+
+// Iterating over a CowVec using a mutable iterator has some overhead. If you don't absolutely need an
+// actual iterator, the fast_for_each_mut method can beused.
+copy_on_write_ref.fast_for_each_mut(|item|{
+    println!("Animal: {}", **item)
+});
 
 // You can also get an owned vector, in this example only when changes were detected
 if copy_on_write_ref.is_owned() {
     let my_private_vec : Vec<&str> = copy_on_write_ref.to_owned();
 }
-
 
 ```
 
