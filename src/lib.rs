@@ -1,4 +1,3 @@
-#![feature(test)]
 #![deny(missing_docs)]
 #![deny(warnings)]
 /*!
@@ -608,6 +607,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    #![feature(test)]
+
     use super::CowVec;
     use crate::CowVecItemWrapper;
     use std::ops::{Deref, DerefMut};
