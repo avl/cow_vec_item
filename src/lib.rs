@@ -1,5 +1,7 @@
 #![deny(missing_docs)]
 #![deny(warnings)]
+#![cfg_attr(test, feature(test))]
+
 /*!
 This is the documentation for `cow_vec_item`.
 
@@ -98,6 +100,7 @@ The intent is for the end result to be sound according to the rust rules for uns
 are always a possibility.
 
 */
+
 
 use std::marker::PhantomData;
 use std::mem;
@@ -605,9 +608,10 @@ where
     }
 }
 
+
+
 #[cfg(test)]
 mod tests {
-    #![feature(test)]
 
     use super::CowVec;
     use crate::CowVecItemWrapper;
