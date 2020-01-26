@@ -408,13 +408,22 @@ impl<'extvec, T: Clone> CowVec<'extvec, T> {
 
             while state.item != state.end {
                 f(&mut state);
-                state.item = state.item.wrapping_add(1);
+                if mem::size_of::<T>() == 0 {
+                    state.item = (state.item as *mut u8).wrapping_add(1) as *mut T;
+                } else {
+                    state.item = state.item.wrapping_add(1);
+                }
+
             }
         } else {
             let mut state = OwnedForEachItem { item: ptr };
             while state.item != end {
                 f(&mut state);
-                state.item = state.item.wrapping_add(1);
+                if mem::size_of::<T>() == 0 {
+                    state.item = (state.item as *mut u8).wrapping_add(1) as *mut T;
+                } else {
+                    state.item = state.item.wrapping_add(1);
+                }
             }
         }
     }
@@ -497,7 +506,11 @@ where
         if n >= len {
             None
         } else {
-            theref.item = theref.item.wrapping_add(n);
+            if mem::size_of::<T>() == 0 {
+                theref.item = (theref.item as *mut u8).wrapping_add(n) as *mut T;
+            } else {
+                theref.item = theref.item.wrapping_add(n);
+            }
 
             let retval = CowVecItemWrapper {
                 item: theref.item,
@@ -507,7 +520,11 @@ where
                 cowvec: self.cowvec,
                 phantom: PhantomData,
             };
-            theref.item = theref.item.wrapping_add(1);
+            if mem::size_of::<T>() == 0 {
+                theref.item = (theref.item as *mut u8).wrapping_add(1) as *mut T;
+            } else {
+                theref.item = theref.item.wrapping_add(1);
+            }
             Some(retval)
         }
     }
@@ -531,7 +548,11 @@ where
                     break;
                 }
                 let self_item = theref.item;
-                theref.item = theref.item.wrapping_add(1);
+                if mem::size_of::<T>() == 0 {
+                    theref.item = (theref.item as *mut u8).wrapping_add(1) as *mut T;
+                } else {
+                    theref.item = theref.item.wrapping_add(1);
+                }
                 retval = CowVecItemWrapper {
                     item: self_item,
                     bad_wrapper_use_detector: self.bad_wrapper_use_detector,
@@ -553,13 +574,19 @@ where
         if *unsafe { (&*self.bad_wrapper_use_detector) } != WrapperState::Dead {
             panic!("cow_vec_iterm: The placeholders returned by the mutable iterator of CowVec must not be retained. Only one wrapper can be alive at a time, but next() was called while the previous value had not been dropped.");
         }
+        println!("Debug: {:?} {:?}",theref.item,theref.end);
+
         if theref.item == theref.end {
             return None;
         }
 
         let self_item = theref.item;
         *unsafe { &mut *self.bad_wrapper_use_detector } = WrapperState::Alive;
-        theref.item = theref.item.wrapping_add(1);
+        if mem::size_of::<T>() == 0 {
+            theref.item = (theref.item as *mut u8).wrapping_add(1) as *mut T;
+        } else {
+            theref.item = theref.item.wrapping_add(1);
+        }
 
         let retval = CowVecItemWrapper {
             item: self_item,
@@ -783,6 +810,73 @@ mod tests {
         it.next().unwrap();
         it.next().unwrap();
         assert_eq!(it.count(), 0);
+    }
+    #[test]
+    fn test_zero_size_iter_mut() {
+        let mut v = Vec::new();
+        v.push(());
+        v.push(());
+
+        let mut temp = CowVec::from(&v);
+
+        let mut iter = temp.iter_mut();
+        assert_eq!(*iter.next().unwrap(),());
+        assert_eq!(*iter.next().unwrap(),());
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_zero_size_for_each() {
+        let mut v = Vec::new();
+        v.push(());
+        v.push(());
+
+        let mut temp = CowVec::from(&v);
+
+        let iter = temp.iter_mut();
+        let mut count = 0;
+        iter.for_each(|x|{
+            assert_eq!(*x,());
+            count+=1;
+        });
+        assert_eq!(count,2);
+    }
+
+    #[test]
+    fn test_zero_size_for_each2() {
+        let mut v = Vec::new();
+        v.push(());
+        v.push(());
+
+        let mut temp = CowVec::from(&v);
+
+        let mut iter = temp.iter_mut();
+        let mut count = 0;
+        let x = iter.next().unwrap();
+        count+=1;
+        assert_eq!(*x,());
+        std::mem::drop(x);
+        iter.for_each(|x|{
+            assert_eq!(*x,());
+            count+=1;
+        });
+        assert_eq!(count,2);
+    }
+    #[test]
+    fn test_zero_size_for_fast_each() {
+        let mut v = Vec::new();
+        v.push(());
+        v.push(());
+
+        let mut temp = CowVec::from(&v);
+
+
+        let mut count=0;
+        temp.fast_for_each_mut(|item|{
+            assert_eq!(**item,());
+            count+=1;
+        });
+        assert_eq!(count,2);
     }
 
     #[test]
