@@ -37,7 +37,7 @@ The docs are available at: https://docs.rs/crate/cow_vec_item/
 
 # License
 
-Savefile is licensed under either of
+cow_vec_item is licensed under either of
 
  * Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or
    http://www.apache.org/licenses/LICENSE-2.0)
