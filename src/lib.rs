@@ -581,7 +581,6 @@ where
         if *unsafe { (&*self.bad_wrapper_use_detector) } != WrapperState::Dead {
             panic!("cow_vec_iterm: The placeholders returned by the mutable iterator of CowVec must not be retained. Only one wrapper can be alive at a time, but next() was called while the previous value had not been dropped.");
         }
-        println!("Debug: {:?} {:?}",theref.item,theref.end);
 
         if theref.item == theref.end {
             return None;
