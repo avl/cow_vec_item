@@ -229,7 +229,7 @@ impl<'extvec, 'cowvec, T> Drop for CowVecItemWrapper<'extvec, 'cowvec, T> {
         // Safe since the originating CowVec and both possible referenced slices
         // (owned or borrowed) must still be alive because of lifetime constraints
         // of CowVecItemWrapper.
-        *unsafe { (&mut *self.bad_wrapper_use_detector) } = WrapperState::Dead;
+        *unsafe { &mut *self.bad_wrapper_use_detector } = WrapperState::Dead;
     }
 }
 impl<'extvec, T: Clone> Deref for CowVec<'extvec, T> {
@@ -543,7 +543,7 @@ where
     where
         F: FnMut(Self::Item),
     {
-        if *unsafe { (&*self.bad_wrapper_use_detector) } != WrapperState::Dead {
+        if *unsafe { &*self.bad_wrapper_use_detector } != WrapperState::Dead {
             panic!("cow_vec_iterm: The placeholders returned by the mutable iterator of CowVec must not be retained. Only one wrapper can be alive at a time, but next() was called while the previous value had not been dropped.");
         }
 
@@ -578,7 +578,7 @@ where
         // Safety: Cowvec must still be alive because of lifetime 'cowvec
         let theref = unsafe { &mut *self.cowvec };
 
-        if *unsafe { (&*self.bad_wrapper_use_detector) } != WrapperState::Dead {
+        if *unsafe { &*self.bad_wrapper_use_detector } != WrapperState::Dead {
             panic!("cow_vec_iterm: The placeholders returned by the mutable iterator of CowVec must not be retained. Only one wrapper can be alive at a time, but next() was called while the previous value had not been dropped.");
         }
 
